@@ -24,10 +24,38 @@ You need to indicate to meson where CUDA headers files are through the CFLAGS va
 Three ways:
 
 - Set ``export CFLAGS=-I/usr/local/cuda/include`` before building
-- Add CFLAGS in the meson command line ``CFLAGS=-I/usr/local/cuda/include meson build``
-- Add the ``-Dc_args`` in meson command line ``meson build -Dc_args=-I/usr/local/cuda/include``
+- Add CFLAGS in the meson command line ``CFLAGS=-I/usr/local/cuda/include meson setup build``
+- Add the ``-Dc_args`` in meson command line ``meson setup build -Dc_args=-I/usr/local/cuda/include``
 
 If headers are not found, the CUDA GPU driver library is not built.
+
+CPU map GPU memory
+~~~~~~~~~~~~~~~~~~
+
+To enable this gpudev feature (i.e. implement the ``rte_gpu_mem_cpu_map``),
+you need the `GDRCopy <https://github.com/NVIDIA/gdrcopy>`_ library and driver
+installed on your system.
+
+A quick recipe to download, build and run GDRCopy library and driver:
+
+.. code-block:: console
+
+  $ git clone https://github.com/NVIDIA/gdrcopy.git
+  $ make
+  $ # make install to install GDRCopy library system wide
+  $ # Launch gdrdrv kernel module on the system
+  $ sudo ./insmod.sh
+
+You need to indicate to meson where GDRCopy headers files are as in case of CUDA headers.
+An example would be:
+
+.. code-block:: console
+
+  $ meson setup build -Dc_args="-I/usr/local/cuda/include -I/path/to/gdrcopy/include"
+
+If headers are not found, the CUDA GPU driver library is built without the CPU map capability
+and will return error if the application invokes the gpudev ``rte_gpu_mem_cpu_map`` function.
+
 
 CUDA Shared Library
 -------------------
@@ -45,6 +73,30 @@ can look for **libcuda.so**.
 All CUDA API symbols are loaded at runtime as well.
 For this reason, to build the CUDA driver library,
 no need to install the CUDA library.
+
+CPU map GPU memory
+~~~~~~~~~~~~~~~~~~
+
+Similarly to CUDA shared library, if the **libgdrapi.so** shared library
+is not installed in default locations (e.g. /usr/local/lib),
+you can use the variable ``GDRCOPY_PATH_L``.
+
+As an example, to enable the CPU map feature sanity check,
+run the ``app/test-gpudev`` application with:
+
+.. code-block:: console
+
+  $ sudo CUDA_PATH_L=/path/to/libcuda GDRCOPY_PATH_L=/path/to/libgdrapi ./build/app/dpdk-test-gpudev
+
+Additionally, the ``gdrdrv`` kernel module built with the GDRCopy project
+has to be loaded on the system:
+
+.. code-block:: console
+
+  $ lsmod | egrep gdrdrv
+  gdrdrv                 20480  0
+  nvidia              35307520  19 nvidia_uvm,nv_peer_mem,gdrdrv,nvidia_modeset
+
 
 Design
 ------
@@ -104,13 +156,13 @@ Minimal requirements to enable the CUDA driver library are:
 - CUDA 11.4 Driver API or newer
 
 `GPUDirect RDMA Technology <https://docs.nvidia.com/cuda/gpudirect-rdma/index.html>`_
-allows compatible network cards (e.g. Mellanox) to directly send and receive packets
+allows compatible network cards (e.g. ConnectX) to directly send and receive packets
 using GPU memory instead of additional memory copies through the CPU system memory.
 To enable this technology, system requirements are:
 
 - `nvidia-peermem <https://docs.nvidia.com/cuda/gpudirect-rdma/index.html#nvidia-peermem>`_
   module running on the system;
-- Mellanox network card ConnectX-5 or newer (BlueField models included);
+- NVIDIA network card ConnectX-5 or newer (BlueField models included);
 - DPDK mlx5 PMD enabled;
 - To reach the best performance, an additional PCIe switch between GPU and NIC is recommended.
 

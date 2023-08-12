@@ -2,6 +2,7 @@
  * Copyright(c) 2017 Intel Corporation
  */
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <errno.h>
 #include <stdint.h>
@@ -11,6 +12,7 @@
 #include <inttypes.h>
 #include <rte_byteorder.h>
 #include <rte_common.h>
+#include <rte_os_shim.h>
 
 #include <rte_debug.h>
 #include <rte_alarm.h>
@@ -19,13 +21,153 @@
 #include <rte_ether.h>
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 
 #include "iavf.h"
 #include "iavf_rxtx.h"
 
 #define MAX_TRY_TIMES 2000
 #define ASQ_DELAY_MS  1
+
+#define MAX_EVENT_PENDING 16
+
+struct iavf_event_element {
+	TAILQ_ENTRY(iavf_event_element) next;
+	struct rte_eth_dev *dev;
+	enum rte_eth_event_type event;
+	void *param;
+	size_t param_alloc_size;
+	uint8_t param_alloc_data[0];
+};
+
+struct iavf_event_handler {
+	uint32_t ndev;
+	pthread_t tid;
+	int fd[2];
+	pthread_mutex_t lock;
+	TAILQ_HEAD(event_list, iavf_event_element) pending;
+};
+
+static struct iavf_event_handler event_handler = {
+	.fd = {-1, -1},
+};
+
+#ifndef TAILQ_FOREACH_SAFE
+#define TAILQ_FOREACH_SAFE(var, head, field, tvar) \
+	for ((var) = TAILQ_FIRST((head)); \
+		(var) && ((tvar) = TAILQ_NEXT((var), field), 1); \
+	(var) = (tvar))
+#endif
+
+static void *
+iavf_dev_event_handle(void *param __rte_unused)
+{
+	struct iavf_event_handler *handler = &event_handler;
+	TAILQ_HEAD(event_list, iavf_event_element) pending;
+
+	while (true) {
+		char unused[MAX_EVENT_PENDING];
+		ssize_t nr = read(handler->fd[0], &unused, sizeof(unused));
+		if (nr <= 0)
+			break;
+
+		TAILQ_INIT(&pending);
+		pthread_mutex_lock(&handler->lock);
+		TAILQ_CONCAT(&pending, &handler->pending, next);
+		pthread_mutex_unlock(&handler->lock);
+
+		struct iavf_event_element *pos, *save_next;
+		TAILQ_FOREACH_SAFE(pos, &pending, next, save_next) {
+			TAILQ_REMOVE(&pending, pos, next);
+			rte_eth_dev_callback_process(pos->dev, pos->event, pos->param);
+			rte_free(pos);
+		}
+	}
+
+	return NULL;
+}
+
+static void
+iavf_dev_event_post(struct rte_eth_dev *dev,
+		enum rte_eth_event_type event,
+		void *param, size_t param_alloc_size)
+{
+	struct iavf_event_handler *handler = &event_handler;
+	char notify_byte;
+	struct iavf_event_element *elem = rte_malloc(NULL, sizeof(*elem) + param_alloc_size, 0);
+	if (!elem)
+		return;
+
+	elem->dev = dev;
+	elem->event = event;
+	elem->param = param;
+	elem->param_alloc_size = param_alloc_size;
+	if (param && param_alloc_size) {
+		rte_memcpy(elem->param_alloc_data, param, param_alloc_size);
+		elem->param = elem->param_alloc_data;
+	}
+
+	pthread_mutex_lock(&handler->lock);
+	TAILQ_INSERT_TAIL(&handler->pending, elem, next);
+	pthread_mutex_unlock(&handler->lock);
+
+	ssize_t nw = write(handler->fd[1], &notify_byte, 1);
+	RTE_SET_USED(nw);
+}
+
+int
+iavf_dev_event_handler_init(void)
+{
+	struct iavf_event_handler *handler = &event_handler;
+
+	if (__atomic_add_fetch(&handler->ndev, 1, __ATOMIC_RELAXED) != 1)
+		return 0;
+#if defined(RTE_EXEC_ENV_IS_WINDOWS) && RTE_EXEC_ENV_IS_WINDOWS != 0
+	int err = _pipe(handler->fd, MAX_EVENT_PENDING, O_BINARY);
+#else
+	int err = pipe(handler->fd);
+#endif
+	if (err != 0) {
+		__atomic_sub_fetch(&handler->ndev, 1, __ATOMIC_RELAXED);
+		return -1;
+	}
+
+	TAILQ_INIT(&handler->pending);
+	pthread_mutex_init(&handler->lock, NULL);
+
+	if (rte_ctrl_thread_create(&handler->tid, "iavf-event-thread",
+				NULL, iavf_dev_event_handle, NULL)) {
+		__atomic_sub_fetch(&handler->ndev, 1, __ATOMIC_RELAXED);
+		return -1;
+	}
+
+	return 0;
+}
+
+void
+iavf_dev_event_handler_fini(void)
+{
+	struct iavf_event_handler *handler = &event_handler;
+
+	if (__atomic_sub_fetch(&handler->ndev, 1, __ATOMIC_RELAXED) != 0)
+		return;
+
+	int unused = pthread_cancel(handler->tid);
+	RTE_SET_USED(unused);
+	close(handler->fd[0]);
+	close(handler->fd[1]);
+	handler->fd[0] = -1;
+	handler->fd[1] = -1;
+
+	pthread_join(handler->tid, NULL);
+	pthread_mutex_destroy(&handler->lock);
+
+	struct iavf_event_element *pos, *save_next;
+	TAILQ_FOREACH_SAFE(pos, &handler->pending, next, save_next) {
+		TAILQ_REMOVE(&handler->pending, pos, next);
+		rte_free(pos);
+	}
+}
 
 static uint32_t
 iavf_convert_link_speed(enum virtchnl_link_speed virt_link_speed)
@@ -278,8 +420,8 @@ iavf_handle_pf_event_msg(struct rte_eth_dev *dev, uint8_t *msg,
 	case VIRTCHNL_EVENT_RESET_IMPENDING:
 		PMD_DRV_LOG(DEBUG, "VIRTCHNL_EVENT_RESET_IMPENDING event");
 		vf->vf_reset = true;
-		rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_RESET,
-					      NULL);
+		iavf_dev_event_post(dev, RTE_ETH_EVENT_INTR_RESET,
+					      NULL, 0);
 		break;
 	case VIRTCHNL_EVENT_LINK_CHANGE:
 		PMD_DRV_LOG(DEBUG, "VIRTCHNL_EVENT_LINK_CHANGE event");
@@ -293,7 +435,7 @@ iavf_handle_pf_event_msg(struct rte_eth_dev *dev, uint8_t *msg,
 			vf->link_speed = iavf_convert_link_speed(speed);
 		}
 		iavf_dev_link_update(dev, 0);
-		rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC, NULL);
+		iavf_dev_event_post(dev, RTE_ETH_EVENT_INTR_LSC, NULL, 0);
 		break;
 	case VIRTCHNL_EVENT_PF_DRIVER_CLOSE:
 		PMD_DRV_LOG(DEBUG, "VIRTCHNL_EVENT_PF_DRIVER_CLOSE event");
@@ -346,23 +488,32 @@ iavf_handle_virtchnl_msg(struct rte_eth_dev *dev)
 				iavf_handle_pf_event_msg(dev, info.msg_buf,
 						info.msg_len);
 			} else {
-				/* check for inline IPsec events */
-				struct inline_ipsec_msg *imsg =
-					(struct inline_ipsec_msg *)info.msg_buf;
-				struct rte_eth_event_ipsec_desc desc;
-				if (msg_opc ==
-					VIRTCHNL_OP_INLINE_IPSEC_CRYPTO &&
-					imsg->ipsec_opcode ==
-						INLINE_IPSEC_OP_EVENT) {
-					struct virtchnl_ipsec_event *ev =
-							imsg->ipsec_data.event;
-					desc.subtype =
-						RTE_ETH_EVENT_IPSEC_UNKNOWN;
-					desc.metadata = ev->ipsec_event_data;
-					rte_eth_dev_callback_process(dev,
-							RTE_ETH_EVENT_IPSEC,
-							&desc);
-					return;
+				/* check for unsolicited messages i.e. events */
+				if (info.msg_len > 0) {
+					switch (msg_opc) {
+					case VIRTCHNL_OP_INLINE_IPSEC_CRYPTO: {
+						struct inline_ipsec_msg *imsg =
+							(struct inline_ipsec_msg *)info.msg_buf;
+						if (imsg->ipsec_opcode
+								== INLINE_IPSEC_OP_EVENT) {
+							struct rte_eth_event_ipsec_desc desc;
+							struct virtchnl_ipsec_event *ev =
+									imsg->ipsec_data.event;
+							desc.subtype =
+									RTE_ETH_EVENT_IPSEC_UNKNOWN;
+							desc.metadata =
+									ev->ipsec_event_data;
+							iavf_dev_event_post(dev,
+								RTE_ETH_EVENT_IPSEC,
+								&desc, sizeof(desc));
+							continue;
+					}
+				}
+						break;
+					default:
+						break;
+					}
+
 				}
 
 				/* read message and it's expected one */
@@ -502,12 +653,14 @@ iavf_get_vf_resource(struct iavf_adapter *adapter)
 		VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC |
 		VIRTCHNL_VF_OFFLOAD_FDIR_PF |
 		VIRTCHNL_VF_OFFLOAD_ADV_RSS_PF |
+		VIRTCHNL_VF_OFFLOAD_FSUB_PF |
 		VIRTCHNL_VF_OFFLOAD_REQ_QUEUES |
 		VIRTCHNL_VF_OFFLOAD_CRC |
 		VIRTCHNL_VF_OFFLOAD_VLAN_V2 |
 		VIRTCHNL_VF_LARGE_NUM_QPAIRS |
 		VIRTCHNL_VF_OFFLOAD_QOS |
-		VIRTCHNL_VF_OFFLOAD_INLINE_IPSEC_CRYPTO;
+		VIRTCHNL_VF_OFFLOAD_INLINE_IPSEC_CRYPTO |
+		VIRTCHNL_VF_CAP_PTP;
 
 	args.in_args = (uint8_t *)&caps;
 	args.in_args_size = sizeof(caps);
@@ -1055,16 +1208,22 @@ iavf_configure_queues(struct iavf_adapter *adapter,
 		vc_qp->rxq.crc_disable = rxq[i]->crc_len != 0 ? 1 : 0;
 #ifndef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
 		if (vf->vf_res->vf_cap_flags &
-		    VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC &&
-		    vf->supported_rxdid & BIT(rxq[i]->rxdid)) {
-			vc_qp->rxq.rxdid = rxq[i]->rxdid;
-			PMD_DRV_LOG(NOTICE, "request RXDID[%d] in Queue[%d]",
-				    vc_qp->rxq.rxdid, i);
-		} else {
-			PMD_DRV_LOG(NOTICE, "RXDID[%d] is not supported, "
-				    "request default RXDID[%d] in Queue[%d]",
-				    rxq[i]->rxdid, IAVF_RXDID_LEGACY_1, i);
-			vc_qp->rxq.rxdid = IAVF_RXDID_LEGACY_1;
+		    VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC) {
+			if (vf->supported_rxdid & BIT(rxq[i]->rxdid)) {
+				vc_qp->rxq.rxdid = rxq[i]->rxdid;
+				PMD_DRV_LOG(NOTICE, "request RXDID[%d] in Queue[%d]",
+					    vc_qp->rxq.rxdid, i);
+			} else {
+				PMD_DRV_LOG(NOTICE, "RXDID[%d] is not supported, "
+					    "request default RXDID[%d] in Queue[%d]",
+					    rxq[i]->rxdid, IAVF_RXDID_LEGACY_1, i);
+				vc_qp->rxq.rxdid = IAVF_RXDID_LEGACY_1;
+			}
+
+			if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_CAP_PTP &&
+			    vf->ptp_caps & VIRTCHNL_1588_PTP_CAP_RX_TSTAMP &&
+			    rxq[i]->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
+				vc_qp->rxq.flags |= VIRTCHNL_PTP_RX_TSTAMP;
 		}
 #else
 		if (vf->vf_res->vf_cap_flags &
@@ -1517,14 +1676,150 @@ iavf_fdir_check(struct iavf_adapter *adapter,
 		PMD_DRV_LOG(ERR,
 			"Failed to check rule request due to parameters validation"
 			" or HW doesn't support");
-		return -1;
+		err = -1;
 	} else {
 		PMD_DRV_LOG(ERR,
 			"Failed to check rule request due to other reasons");
-		return -1;
+		err =  -1;
 	}
 
-	return 0;
+	return err;
+}
+
+int
+iavf_flow_sub(struct iavf_adapter *adapter, struct iavf_fsub_conf *filter)
+{
+	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(adapter);
+	struct virtchnl_flow_sub *fsub_cfg;
+	struct iavf_cmd_info args;
+	int err;
+
+	filter->sub_fltr.vsi_id = vf->vsi_res->vsi_id;
+	filter->sub_fltr.validate_only = 0;
+
+	memset(&args, 0, sizeof(args));
+	args.ops = VIRTCHNL_OP_FLOW_SUBSCRIBE;
+	args.in_args = (uint8_t *)(&filter->sub_fltr);
+	args.in_args_size = sizeof(*(&filter->sub_fltr));
+	args.out_buffer = vf->aq_resp;
+	args.out_size = IAVF_AQ_BUF_SZ;
+
+	err = iavf_execute_vf_cmd(adapter, &args, 0);
+	if (err) {
+		PMD_DRV_LOG(ERR, "Failed to execute command of "
+				 "OP_FLOW_SUBSCRIBE");
+		return err;
+	}
+
+	fsub_cfg = (struct virtchnl_flow_sub *)args.out_buffer;
+	filter->flow_id = fsub_cfg->flow_id;
+
+	if (fsub_cfg->status == VIRTCHNL_FSUB_SUCCESS) {
+		PMD_DRV_LOG(INFO, "Succeed in adding rule request by PF");
+	} else if (fsub_cfg->status == VIRTCHNL_FSUB_FAILURE_RULE_NORESOURCE) {
+		PMD_DRV_LOG(ERR, "Failed to add rule request due to no hw "
+				 "resource");
+		err = -1;
+	} else if (fsub_cfg->status == VIRTCHNL_FSUB_FAILURE_RULE_EXIST) {
+		PMD_DRV_LOG(ERR, "Failed to add rule request due to the rule "
+				 "is already existed");
+		err = -1;
+	} else if (fsub_cfg->status == VIRTCHNL_FSUB_FAILURE_RULE_INVALID) {
+		PMD_DRV_LOG(ERR, "Failed to add rule request due to the hw "
+				 "doesn't support");
+		err = -1;
+	} else {
+		PMD_DRV_LOG(ERR, "Failed to add rule request due to other "
+				 "reasons");
+		err = -1;
+	}
+
+	return err;
+}
+
+int
+iavf_flow_unsub(struct iavf_adapter *adapter, struct iavf_fsub_conf *filter)
+{
+	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(adapter);
+	struct virtchnl_flow_unsub *unsub_cfg;
+	struct iavf_cmd_info args;
+	int err;
+
+	filter->unsub_fltr.vsi_id = vf->vsi_res->vsi_id;
+	filter->unsub_fltr.flow_id = filter->flow_id;
+
+	memset(&args, 0, sizeof(args));
+	args.ops = VIRTCHNL_OP_FLOW_UNSUBSCRIBE;
+	args.in_args = (uint8_t *)(&filter->unsub_fltr);
+	args.in_args_size = sizeof(filter->unsub_fltr);
+	args.out_buffer = vf->aq_resp;
+	args.out_size = IAVF_AQ_BUF_SZ;
+
+	err = iavf_execute_vf_cmd(adapter, &args, 0);
+	if (err) {
+		PMD_DRV_LOG(ERR, "Failed to execute command of "
+				 "OP_FLOW_UNSUBSCRIBE");
+		return err;
+	}
+
+	unsub_cfg = (struct virtchnl_flow_unsub *)args.out_buffer;
+
+	if (unsub_cfg->status == VIRTCHNL_FSUB_SUCCESS) {
+		PMD_DRV_LOG(INFO, "Succeed in deleting rule request by PF");
+	} else if (unsub_cfg->status == VIRTCHNL_FSUB_FAILURE_RULE_NONEXIST) {
+		PMD_DRV_LOG(ERR, "Failed to delete rule request due to this "
+				 "rule doesn't exist");
+		err = -1;
+	} else {
+		PMD_DRV_LOG(ERR, "Failed to delete rule request due to other "
+				 "reasons");
+		err = -1;
+	}
+
+	return err;
+}
+
+int
+iavf_flow_sub_check(struct iavf_adapter *adapter,
+		    struct iavf_fsub_conf *filter)
+{
+	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(adapter);
+	struct virtchnl_flow_sub *fsub_cfg;
+
+	struct iavf_cmd_info args;
+	int err;
+
+	filter->sub_fltr.vsi_id = vf->vsi_res->vsi_id;
+	filter->sub_fltr.validate_only = 1;
+
+	args.ops = VIRTCHNL_OP_FLOW_SUBSCRIBE;
+	args.in_args = (uint8_t *)(&filter->sub_fltr);
+	args.in_args_size = sizeof(*(&filter->sub_fltr));
+	args.out_buffer = vf->aq_resp;
+	args.out_size = IAVF_AQ_BUF_SZ;
+
+	err = iavf_execute_vf_cmd(adapter, &args, 0);
+	if (err) {
+		PMD_DRV_LOG(ERR, "Failed to check flow subscription rule");
+		return err;
+	}
+
+	fsub_cfg = (struct virtchnl_flow_sub *)args.out_buffer;
+
+	if (fsub_cfg->status == VIRTCHNL_FSUB_SUCCESS) {
+		PMD_DRV_LOG(INFO, "Succeed in checking rule request by PF");
+	} else if (fsub_cfg->status == VIRTCHNL_FSUB_FAILURE_RULE_INVALID) {
+		PMD_DRV_LOG(ERR, "Failed to check rule request due to "
+				 "parameters validation or HW doesn't "
+				 "support");
+		err = -1;
+	} else {
+		PMD_DRV_LOG(ERR, "Failed to check rule request due to other "
+				 "reasons");
+		err = -1;
+	}
+
+	return err;
 }
 
 int
@@ -1650,6 +1945,29 @@ int iavf_set_q_tc_map(struct rte_eth_dev *dev,
 	if (err)
 		PMD_DRV_LOG(ERR, "Failed to execute command of"
 			    " VIRTCHNL_OP_CONFIG_TC_MAP");
+	return err;
+}
+
+int iavf_set_q_bw(struct rte_eth_dev *dev,
+		struct virtchnl_queues_bw_cfg *q_bw, uint16_t size)
+{
+	struct iavf_adapter *adapter =
+			IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
+	struct iavf_cmd_info args;
+	int err;
+
+	memset(&args, 0, sizeof(args));
+	args.ops = VIRTCHNL_OP_CONFIG_QUEUE_BW;
+	args.in_args = (uint8_t *)q_bw;
+	args.in_args_size = size;
+	args.out_buffer = vf->aq_resp;
+	args.out_size = IAVF_AQ_BUF_SZ;
+
+	err = iavf_execute_vf_cmd(adapter, &args, 0);
+	if (err)
+		PMD_DRV_LOG(ERR, "Failed to execute command of"
+			    " VIRTCHNL_OP_CONFIG_QUEUE_BW");
 	return err;
 }
 
@@ -1821,4 +2139,93 @@ iavf_ipsec_crypto_request(struct iavf_adapter *adapter,
 	memcpy(resp_msg, args.out_buffer, resp_msg_len);
 
 	return 0;
+}
+
+int
+iavf_set_vf_quanta_size(struct iavf_adapter *adapter, u16 start_queue_id, u16 num_queues)
+{
+	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(adapter);
+	struct iavf_cmd_info args;
+	struct virtchnl_quanta_cfg q_quanta;
+	int err;
+
+	if (adapter->devargs.quanta_size == 0)
+		return 0;
+
+	q_quanta.quanta_size = adapter->devargs.quanta_size;
+	q_quanta.queue_select.type = VIRTCHNL_QUEUE_TYPE_TX;
+	q_quanta.queue_select.start_queue_id = start_queue_id;
+	q_quanta.queue_select.num_queues = num_queues;
+
+	args.ops = VIRTCHNL_OP_CONFIG_QUANTA;
+	args.in_args = (uint8_t *)&q_quanta;
+	args.in_args_size = sizeof(q_quanta);
+	args.out_buffer = vf->aq_resp;
+	args.out_size = IAVF_AQ_BUF_SZ;
+
+	err = iavf_execute_vf_cmd(adapter, &args, 0);
+	if (err) {
+		PMD_DRV_LOG(ERR, "Failed to execute command VIRTCHNL_OP_CONFIG_QUANTA");
+		return err;
+	}
+
+	return 0;
+}
+
+int
+iavf_get_ptp_cap(struct iavf_adapter *adapter)
+{
+	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(adapter);
+	struct virtchnl_ptp_caps ptp_caps;
+	struct iavf_cmd_info args;
+	int err;
+
+	ptp_caps.caps = VIRTCHNL_1588_PTP_CAP_RX_TSTAMP |
+			VIRTCHNL_1588_PTP_CAP_READ_PHC;
+
+	args.ops = VIRTCHNL_OP_1588_PTP_GET_CAPS;
+	args.in_args = (uint8_t *)&ptp_caps;
+	args.in_args_size = sizeof(ptp_caps);
+	args.out_buffer = vf->aq_resp;
+	args.out_size = IAVF_AQ_BUF_SZ;
+
+	err = iavf_execute_vf_cmd(adapter, &args, 0);
+	if (err) {
+		PMD_DRV_LOG(ERR,
+			    "Failed to execute command of OP_1588_PTP_GET_CAPS");
+		return err;
+	}
+
+	vf->ptp_caps = ((struct virtchnl_ptp_caps *)args.out_buffer)->caps;
+
+	return 0;
+}
+
+int
+iavf_get_phc_time(struct iavf_rx_queue *rxq)
+{
+	struct iavf_adapter *adapter = rxq->vsi->adapter;
+	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(adapter);
+	struct virtchnl_phc_time phc_time;
+	struct iavf_cmd_info args;
+	int err = 0;
+
+	args.ops = VIRTCHNL_OP_1588_PTP_GET_TIME;
+	args.in_args = (uint8_t *)&phc_time;
+	args.in_args_size = sizeof(phc_time);
+	args.out_buffer = vf->aq_resp;
+	args.out_size = IAVF_AQ_BUF_SZ;
+
+	rte_spinlock_lock(&vf->phc_time_aq_lock);
+	err = iavf_execute_vf_cmd(adapter, &args, 0);
+	if (err) {
+		PMD_DRV_LOG(ERR,
+			    "Failed to execute command of VIRTCHNL_OP_1588_PTP_GET_TIME");
+		goto out;
+	}
+	rxq->phc_time = ((struct virtchnl_phc_time *)args.out_buffer)->time;
+
+out:
+	rte_spinlock_unlock(&vf->phc_time_aq_lock);
+	return err;
 }

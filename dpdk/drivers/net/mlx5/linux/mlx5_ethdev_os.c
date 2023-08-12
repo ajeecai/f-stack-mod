@@ -23,10 +23,9 @@
 #include <stdalign.h>
 #include <sys/un.h>
 #include <time.h>
-#include <dlfcn.h>
 
 #include <ethdev_driver.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_mbuf.h>
 #include <rte_common.h>
 #include <rte_interrupts.h>
@@ -882,77 +881,6 @@ mlx5_dev_interrupt_handler(void *cb_arg)
 	}
 }
 
-/*
- * Unregister callback handler safely. The handler may be active
- * while we are trying to unregister it, in this case code -EAGAIN
- * is returned by rte_intr_callback_unregister(). This routine checks
- * the return code and tries to unregister handler again.
- *
- * @param handle
- *   interrupt handle
- * @param cb_fn
- *   pointer to callback routine
- * @cb_arg
- *   opaque callback parameter
- */
-void
-mlx5_intr_callback_unregister(const struct rte_intr_handle *handle,
-			      rte_intr_callback_fn cb_fn, void *cb_arg)
-{
-	/*
-	 * Try to reduce timeout management overhead by not calling
-	 * the timer related routines on the first iteration. If the
-	 * unregistering succeeds on first call there will be no
-	 * timer calls at all.
-	 */
-	uint64_t twait = 0;
-	uint64_t start = 0;
-
-	do {
-		int ret;
-
-		ret = rte_intr_callback_unregister(handle, cb_fn, cb_arg);
-		if (ret >= 0)
-			return;
-		if (ret != -EAGAIN) {
-			DRV_LOG(INFO, "failed to unregister interrupt"
-				      " handler (error: %d)", ret);
-			MLX5_ASSERT(false);
-			return;
-		}
-		if (twait) {
-			struct timespec onems;
-
-			/* Wait one millisecond and try again. */
-			onems.tv_sec = 0;
-			onems.tv_nsec = NS_PER_S / MS_PER_S;
-			nanosleep(&onems, 0);
-			/* Check whether one second elapsed. */
-			if ((rte_get_timer_cycles() - start) <= twait)
-				continue;
-		} else {
-			/*
-			 * We get the amount of timer ticks for one second.
-			 * If this amount elapsed it means we spent one
-			 * second in waiting. This branch is executed once
-			 * on first iteration.
-			 */
-			twait = rte_get_timer_hz();
-			MLX5_ASSERT(twait);
-		}
-		/*
-		 * Timeout elapsed, show message (once a second) and retry.
-		 * We have no other acceptable option here, if we ignore
-		 * the unregistering return code the handler will not
-		 * be unregistered, fd will be closed and we may get the
-		 * crush. Hanging and messaging in the loop seems not to be
-		 * the worst choice.
-		 */
-		DRV_LOG(INFO, "Retrying to unregister interrupt handler");
-		start = rte_get_timer_cycles();
-	} while (true);
-}
-
 /**
  * Handle DEVX interrupts from the NIC.
  * This function is probably called from the DPDK host thread.
@@ -1102,7 +1030,6 @@ mlx5_sysfs_check_switch_info(bool device_dir,
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
-static int (*real_if_indextoname)(unsigned int, char *);
 int
 mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 {
@@ -1121,16 +1048,7 @@ mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 	bool device_dir = false;
 	char c;
 
-	// for ff tools
-	if (!real_if_indextoname) {
-		real_if_indextoname = dlsym(RTLD_NEXT, "if_indextoname");
-		if (!real_if_indextoname) {
-			rte_errno = errno;
-			return -rte_errno;
-		}
-	}
-
-	if (!real_if_indextoname(ifindex, ifname)) {
+	if (!if_indextoname(ifindex, ifname)) {
 		rte_errno = errno;
 		return -rte_errno;
 	}
@@ -1537,6 +1455,70 @@ static const struct mlx5_counter_ctrl mlx5_counters_init[] = {
 		.ctr_name = "rx_discards_phy",
 	},
 	{
+		.dpdk_name = "rx_prio0_buf_discard_packets",
+		.ctr_name = "rx_prio0_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio1_buf_discard_packets",
+		.ctr_name = "rx_prio1_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio2_buf_discard_packets",
+		.ctr_name = "rx_prio2_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio3_buf_discard_packets",
+		.ctr_name = "rx_prio3_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio4_buf_discard_packets",
+		.ctr_name = "rx_prio4_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio5_buf_discard_packets",
+		.ctr_name = "rx_prio5_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio6_buf_discard_packets",
+		.ctr_name = "rx_prio6_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio7_buf_discard_packets",
+		.ctr_name = "rx_prio7_buf_discard",
+	},
+	{
+		.dpdk_name = "rx_prio0_cong_discard_packets",
+		.ctr_name = "rx_prio0_cong_discard",
+	},
+	{
+		.dpdk_name = "rx_prio1_cong_discard_packets",
+		.ctr_name = "rx_prio1_cong_discard",
+	},
+	{
+		.dpdk_name = "rx_prio2_cong_discard_packets",
+		.ctr_name = "rx_prio2_cong_discard",
+	},
+	{
+		.dpdk_name = "rx_prio3_cong_discard_packets",
+		.ctr_name = "rx_prio3_cong_discard",
+	},
+	{
+		.dpdk_name = "rx_prio4_cong_discard_packets",
+		.ctr_name = "rx_prio4_cong_discard",
+	},
+	{
+		.dpdk_name = "rx_prio5_cong_discard_packets",
+		.ctr_name = "rx_prio5_cong_discard",
+	},
+	{
+		.dpdk_name = "rx_prio6_cong_discard_packets",
+		.ctr_name = "rx_prio6_cong_discard",
+	},
+	{
+		.dpdk_name = "rx_prio7_cong_discard_packets",
+		.ctr_name = "rx_prio7_cong_discard",
+	},
+	{
 		.dpdk_name = "tx_phy_bytes",
 		.ctr_name = "tx_bytes_phy",
 	},
@@ -1635,6 +1617,7 @@ mlx5_os_stats_init(struct rte_eth_dev *dev)
 		}
 	}
 	/* Add dev counters. */
+	MLX5_ASSERT(xstats_ctrl->mlx5_stats_n <= MLX5_MAX_XSTATS);
 	for (i = 0; i != xstats_n; ++i) {
 		if (mlx5_counters_init[i].dev) {
 			unsigned int idx = xstats_ctrl->mlx5_stats_n++;
@@ -1643,7 +1626,6 @@ mlx5_os_stats_init(struct rte_eth_dev *dev)
 			xstats_ctrl->hw_stats[idx] = 0;
 		}
 	}
-	MLX5_ASSERT(xstats_ctrl->mlx5_stats_n <= MLX5_MAX_XSTATS);
 	xstats_ctrl->stats_n = dev_stats_n;
 	/* Copy to base at first time. */
 	ret = mlx5_os_read_dev_counters(dev, xstats_ctrl->base);
@@ -1693,10 +1675,7 @@ mlx5_get_mac(struct rte_eth_dev *dev, uint8_t (*mac)[RTE_ETHER_ADDR_LEN])
  */
 int mlx5_get_flag_dropless_rq(struct rte_eth_dev *dev)
 {
-	struct {
-		struct ethtool_sset_info hdr;
-		uint32_t buf[1];
-	} sset_info;
+	struct ethtool_sset_info *sset_info = NULL;
 	struct ethtool_drvinfo drvinfo;
 	struct ifreq ifr;
 	struct ethtool_gstrings *strings = NULL;
@@ -1707,15 +1686,21 @@ int mlx5_get_flag_dropless_rq(struct rte_eth_dev *dev)
 	int32_t i;
 	int ret;
 
-	sset_info.hdr.cmd = ETHTOOL_GSSET_INFO;
-	sset_info.hdr.reserved = 0;
-	sset_info.hdr.sset_mask = 1ULL << ETH_SS_PRIV_FLAGS;
+	sset_info = mlx5_malloc(0, sizeof(struct ethtool_sset_info) +
+			sizeof(uint32_t), 0, SOCKET_ID_ANY);
+	if (sset_info == NULL) {
+		rte_errno = ENOMEM;
+		return -rte_errno;
+	}
+	sset_info->cmd = ETHTOOL_GSSET_INFO;
+	sset_info->reserved = 0;
+	sset_info->sset_mask = 1ULL << ETH_SS_PRIV_FLAGS;
 	ifr.ifr_data = (caddr_t)&sset_info;
 	ret = mlx5_ifreq(dev, SIOCETHTOOL, &ifr);
 	if (!ret) {
-		const uint32_t *sset_lengths = sset_info.hdr.data;
+		const uint32_t *sset_lengths = sset_info->data;
 
-		len = sset_info.hdr.sset_mask ? sset_lengths[0] : 0;
+		len = sset_info->sset_mask ? sset_lengths[0] : 0;
 	} else if (ret == -EOPNOTSUPP) {
 		drvinfo.cmd = ETHTOOL_GDRVINFO;
 		ifr.ifr_data = (caddr_t)&drvinfo;
@@ -1788,5 +1773,6 @@ int mlx5_get_flag_dropless_rq(struct rte_eth_dev *dev)
 	ret = !!(flags.data & (1U << i));
 exit:
 	mlx5_free(strings);
+	mlx5_free(sset_info);
 	return ret;
 }

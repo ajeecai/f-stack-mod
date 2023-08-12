@@ -183,8 +183,10 @@ static const struct rte_txgbe_xstats_name_off rte_txgbe_stats_strings[] = {
 	HW_XSTAT(rx_management_packets),
 	HW_XSTAT(tx_management_packets),
 	HW_XSTAT(rx_management_dropped),
+	HW_XSTAT(rx_dma_drop),
 
 	/* Basic Error */
+	HW_XSTAT(rx_rdb_drop),
 	HW_XSTAT(rx_crc_errors),
 	HW_XSTAT(rx_illegal_byte_errors),
 	HW_XSTAT(rx_error_bytes),
@@ -192,7 +194,7 @@ static const struct rte_txgbe_xstats_name_off rte_txgbe_stats_strings[] = {
 	HW_XSTAT(rx_length_errors),
 	HW_XSTAT(rx_undersize_errors),
 	HW_XSTAT(rx_fragment_errors),
-	HW_XSTAT(rx_oversize_errors),
+	HW_XSTAT(rx_oversize_cnt),
 	HW_XSTAT(rx_jabber_errors),
 	HW_XSTAT(rx_l3_l4_xsum_error),
 	HW_XSTAT(mac_local_errors),
@@ -591,10 +593,24 @@ eth_txgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
 
+	hw->hw_addr = (void *)pci_dev->mem_resource[0].addr;
+
 	/* Vendor and Device ID need to be set before init of shared code */
 	hw->device_id = pci_dev->id.device_id;
 	hw->vendor_id = pci_dev->id.vendor_id;
-	hw->hw_addr = (void *)pci_dev->mem_resource[0].addr;
+	if (pci_dev->id.subsystem_vendor_id == PCI_VENDOR_ID_WANGXUN) {
+		hw->subsystem_device_id = pci_dev->id.subsystem_device_id;
+	} else {
+		u32 ssid;
+
+		ssid = txgbe_flash_read_dword(hw, 0xFFFDC);
+		if (ssid == 0x1) {
+			PMD_INIT_LOG(ERR,
+				"Read of internal subsystem device id failed\n");
+			return -ENODEV;
+		}
+		hw->subsystem_device_id = (u16)ssid >> 8 | (u16)ssid << 8;
+	}
 	hw->allow_unsupported_sfp = 1;
 
 	/* Reserve memory for interrupt status block */
@@ -821,10 +837,8 @@ static int txgbe_fdir_filter_uninit(struct rte_eth_dev *eth_dev)
 	struct txgbe_hw_fdir_info *fdir_info = TXGBE_DEV_FDIR(eth_dev);
 	struct txgbe_fdir_filter *fdir_filter;
 
-	if (fdir_info->hash_map)
-		rte_free(fdir_info->hash_map);
-	if (fdir_info->hash_handle)
-		rte_hash_free(fdir_info->hash_handle);
+	rte_free(fdir_info->hash_map);
+	rte_hash_free(fdir_info->hash_handle);
 
 	while ((fdir_filter = TAILQ_FIRST(&fdir_info->fdir_list))) {
 		TAILQ_REMOVE(&fdir_info->fdir_list,
@@ -841,10 +855,8 @@ static int txgbe_l2_tn_filter_uninit(struct rte_eth_dev *eth_dev)
 	struct txgbe_l2_tn_info *l2_tn_info = TXGBE_DEV_L2_TN(eth_dev);
 	struct txgbe_l2_tn_filter *l2_tn_filter;
 
-	if (l2_tn_info->hash_map)
-		rte_free(l2_tn_info->hash_map);
-	if (l2_tn_info->hash_handle)
-		rte_hash_free(l2_tn_info->hash_handle);
+	rte_free(l2_tn_info->hash_map);
+	rte_hash_free(l2_tn_info->hash_handle);
 
 	while ((l2_tn_filter = TAILQ_FIRST(&l2_tn_info->l2_tn_list))) {
 		TAILQ_REMOVE(&l2_tn_info->l2_tn_list,
@@ -1709,7 +1721,7 @@ txgbe_dev_start(struct rte_eth_dev *dev)
 	txgbe_configure_port(dev);
 	txgbe_configure_dcb(dev);
 
-	if (dev->data->dev_conf.fdir_conf.mode != RTE_FDIR_MODE_NONE) {
+	if (TXGBE_DEV_FDIR_CONF(dev)->mode != RTE_FDIR_MODE_NONE) {
 		err = txgbe_fdir_configure(dev);
 		if (err)
 			goto error;
@@ -2147,7 +2159,7 @@ txgbe_read_stats_registers(struct txgbe_hw *hw,
 	hw_stats->rx_bytes += rd64(hw, TXGBE_DMARXOCTL);
 	hw_stats->tx_bytes += rd64(hw, TXGBE_DMATXOCTL);
 	hw_stats->rx_dma_drop += rd32(hw, TXGBE_DMARXDROP);
-	hw_stats->rx_drop_packets += rd32(hw, TXGBE_PBRXDROP);
+	hw_stats->rx_rdb_drop += rd32(hw, TXGBE_PBRXDROP);
 
 	/* MAC Stats */
 	hw_stats->rx_crc_errors += rd64(hw, TXGBE_MACRXERRCRCL);
@@ -2179,7 +2191,7 @@ txgbe_read_stats_registers(struct txgbe_hw *hw,
 			rd64(hw, TXGBE_MACTX1024TOMAXL);
 
 	hw_stats->rx_undersize_errors += rd64(hw, TXGBE_MACRXERRLENL);
-	hw_stats->rx_oversize_errors += rd32(hw, TXGBE_MACRXOVERSIZE);
+	hw_stats->rx_oversize_cnt += rd32(hw, TXGBE_MACRXOVERSIZE);
 	hw_stats->rx_jabber_errors += rd32(hw, TXGBE_MACRXJABBER);
 
 	/* MNG Stats */
@@ -2301,8 +2313,7 @@ txgbe_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 			  hw_stats->rx_mac_short_packet_dropped +
 			  hw_stats->rx_length_errors +
 			  hw_stats->rx_undersize_errors +
-			  hw_stats->rx_oversize_errors +
-			  hw_stats->rx_drop_packets +
+			  hw_stats->rx_rdb_drop +
 			  hw_stats->rx_illegal_byte_errors +
 			  hw_stats->rx_error_bytes +
 			  hw_stats->rx_fragment_errors +
@@ -3169,7 +3180,7 @@ txgbe_dev_led_on(struct rte_eth_dev *dev)
 	struct txgbe_hw *hw;
 
 	hw = TXGBE_DEV_HW(dev);
-	return txgbe_led_on(hw, 4) == 0 ? 0 : -ENOTSUP;
+	return txgbe_led_on(hw, TXGBE_LEDCTL_ACTIVE) == 0 ? 0 : -ENOTSUP;
 }
 
 static int
@@ -3178,7 +3189,7 @@ txgbe_dev_led_off(struct rte_eth_dev *dev)
 	struct txgbe_hw *hw;
 
 	hw = TXGBE_DEV_HW(dev);
-	return txgbe_led_off(hw, 4) == 0 ? 0 : -ENOTSUP;
+	return txgbe_led_off(hw, TXGBE_LEDCTL_ACTIVE) == 0 ? 0 : -ENOTSUP;
 }
 
 static int
@@ -3753,7 +3764,7 @@ txgbe_configure_msix(struct rte_eth_dev *dev)
 
 int
 txgbe_set_queue_rate_limit(struct rte_eth_dev *dev,
-			   uint16_t queue_idx, uint16_t tx_rate)
+			   uint16_t queue_idx, uint32_t tx_rate)
 {
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
 	uint32_t bcnrc_val;

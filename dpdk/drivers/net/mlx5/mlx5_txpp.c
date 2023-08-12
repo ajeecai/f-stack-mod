@@ -741,11 +741,8 @@ mlx5_txpp_interrupt_handler(void *cb_arg)
 static void
 mlx5_txpp_stop_service(struct mlx5_dev_ctx_shared *sh)
 {
-	if (!rte_intr_fd_get(sh->txpp.intr_handle))
-		return;
-	mlx5_intr_callback_unregister(sh->txpp.intr_handle,
-				      mlx5_txpp_interrupt_handler, sh);
-	rte_intr_instance_free(sh->txpp.intr_handle);
+	mlx5_os_interrupt_handler_destroy(sh->txpp.intr_handle,
+					  mlx5_txpp_interrupt_handler, sh);
 }
 
 /* Attach interrupt handler and fires first request to Rearm Queue. */
@@ -769,23 +766,12 @@ mlx5_txpp_start_service(struct mlx5_dev_ctx_shared *sh)
 		rte_errno = errno;
 		return -rte_errno;
 	}
-	sh->txpp.intr_handle =
-			rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_SHARED);
-	if (sh->txpp.intr_handle == NULL) {
-		DRV_LOG(ERR, "Fail to allocate intr_handle");
-		return -ENOMEM;
-	}
 	fd = mlx5_os_get_devx_channel_fd(sh->txpp.echan);
-	if (rte_intr_fd_set(sh->txpp.intr_handle, fd))
-		return -rte_errno;
-
-	if (rte_intr_type_set(sh->txpp.intr_handle, RTE_INTR_HANDLE_EXT))
-		return -rte_errno;
-
-	if (rte_intr_callback_register(sh->txpp.intr_handle,
-				       mlx5_txpp_interrupt_handler, sh)) {
-		rte_intr_fd_set(sh->txpp.intr_handle, 0);
-		DRV_LOG(ERR, "Failed to register CQE interrupt %d.", rte_errno);
+	sh->txpp.intr_handle = mlx5_os_interrupt_handler_create
+		(RTE_INTR_INSTANCE_F_SHARED, false,
+		 fd, mlx5_txpp_interrupt_handler, sh);
+	if (!sh->txpp.intr_handle) {
+		DRV_LOG(ERR, "Fail to allocate intr_handle");
 		return -rte_errno;
 	}
 	/* Subscribe CQ event to the event channel controlled by the driver. */
@@ -816,16 +802,16 @@ mlx5_txpp_start_service(struct mlx5_dev_ctx_shared *sh)
  * Returns 0 on success, negative otherwise
  */
 static int
-mlx5_txpp_create(struct mlx5_dev_ctx_shared *sh, struct mlx5_priv *priv)
+mlx5_txpp_create(struct mlx5_dev_ctx_shared *sh)
 {
-	int tx_pp = priv->config.tx_pp;
+	int tx_pp = sh->config.tx_pp;
 	int ret;
 
 	/* Store the requested pacing parameters. */
 	sh->txpp.tick = tx_pp >= 0 ? tx_pp : -tx_pp;
 	sh->txpp.test = !!(tx_pp < 0);
-	sh->txpp.skew = priv->config.tx_skew;
-	sh->txpp.freq = priv->config.hca_attr.dev_freq_khz;
+	sh->txpp.skew = sh->config.tx_skew;
+	sh->txpp.freq = sh->cdev->config.hca_attr.dev_freq_khz;
 	ret = mlx5_txpp_create_event_channel(sh);
 	if (ret)
 		goto exit;
@@ -891,7 +877,7 @@ mlx5_txpp_start(struct rte_eth_dev *dev)
 	struct mlx5_dev_ctx_shared *sh = priv->sh;
 	int err = 0;
 
-	if (!priv->config.tx_pp) {
+	if (!sh->config.tx_pp) {
 		/* Packet pacing is not requested for the device. */
 		MLX5_ASSERT(priv->txpp_en == 0);
 		return 0;
@@ -901,7 +887,7 @@ mlx5_txpp_start(struct rte_eth_dev *dev)
 		MLX5_ASSERT(sh->txpp.refcnt);
 		return 0;
 	}
-	if (priv->config.tx_pp > 0) {
+	if (sh->config.tx_pp > 0) {
 		err = rte_mbuf_dynflag_lookup
 			(RTE_MBUF_DYNFLAG_TX_TIMESTAMP_NAME, NULL);
 		/* No flag registered means no service needed. */
@@ -914,7 +900,7 @@ mlx5_txpp_start(struct rte_eth_dev *dev)
 		priv->txpp_en = 1;
 		++sh->txpp.refcnt;
 	} else {
-		err = mlx5_txpp_create(sh, priv);
+		err = mlx5_txpp_create(sh);
 		if (!err) {
 			MLX5_ASSERT(sh->txpp.tick);
 			priv->txpp_en = 1;

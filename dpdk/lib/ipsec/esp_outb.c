@@ -4,7 +4,6 @@
 
 #include <rte_ipsec.h>
 #include <rte_esp.h>
-#include <rte_ip.h>
 #include <rte_udp.h>
 #include <rte_errno.h>
 #include <rte_cryptodev.h>
@@ -220,8 +219,10 @@ outb_tun_pkt_prepare(struct rte_ipsec_sa *sa, rte_be64_t sqc,
 	/* pad length */
 	pdlen -= sizeof(*espt);
 
+	RTE_ASSERT(pdlen <= sizeof(esp_pad_bytes));
+
 	/* copy padding data */
-	rte_memcpy(pt, esp_pad_bytes, pdlen);
+	rte_memcpy(pt, esp_pad_bytes, RTE_MIN(pdlen, sizeof(esp_pad_bytes)));
 
 	/* update esp trailer */
 	espt = (struct rte_esp_tail *)(pt + pdlen);
@@ -417,8 +418,10 @@ outb_trs_pkt_prepare(struct rte_ipsec_sa *sa, rte_be64_t sqc,
 	/* pad length */
 	pdlen -= sizeof(*espt);
 
+	RTE_ASSERT(pdlen <= sizeof(esp_pad_bytes));
+
 	/* copy padding data */
-	rte_memcpy(pt, esp_pad_bytes, pdlen);
+	rte_memcpy(pt, esp_pad_bytes, RTE_MIN(pdlen, sizeof(esp_pad_bytes)));
 
 	/* update esp trailer */
 	espt = (struct rte_esp_tail *)(pt + pdlen);

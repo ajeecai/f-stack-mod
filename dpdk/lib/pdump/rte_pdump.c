@@ -2,7 +2,8 @@
  * Copyright(c) 2016-2018 Intel Corporation
  */
 
-#include <rte_memcpy.h>
+#include <stdlib.h>
+
 #include <rte_mbuf.h>
 #include <rte_ethdev.h>
 #include <rte_lcore.h>
@@ -535,6 +536,12 @@ pdump_prepare_client_request(const char *device, uint16_t queue,
 	struct timespec ts = {.tv_sec = 5, .tv_nsec = 0};
 	struct pdump_request *req = (struct pdump_request *)mp_req.param;
 	struct pdump_response *resp;
+
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		PDUMP_LOG(ERR,
+			  "pdump enable/disable not allowed in primary process\n");
+		return -EINVAL;
+	}
 
 	memset(req, 0, sizeof(*req));
 
