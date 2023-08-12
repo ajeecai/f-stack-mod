@@ -202,7 +202,7 @@ check_all_ports_link_status(void)
                     printf("Port %d Link Up - speed %u "
                         "Mbps - %s\n", (int)portid,
                         (unsigned)link.link_speed,
-                        (link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
+                        (link.link_duplex == RTE_ETH_LINK_FULL_DUPLEX) ?
                         ("full-duplex") : ("half-duplex\n"));
                 } else {
                     printf("Port %d Link Down\n", (int)portid);
@@ -546,14 +546,14 @@ set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
         return;
     }
 
-    int reta_conf_size = RTE_MAX(1, reta_size / RTE_RETA_GROUP_SIZE);
+    int reta_conf_size = RTE_MAX(1, reta_size / RTE_ETH_RETA_GROUP_SIZE);
     struct rte_eth_rss_reta_entry64 reta_conf[reta_conf_size];
 
     /* config HW indirection table */
     unsigned i, j, hash=0;
     for (i = 0; i < reta_conf_size; i++) {
         reta_conf[i].mask = ~0ULL;
-        for (j = 0; j < RTE_RETA_GROUP_SIZE; j++) {
+        for (j = 0; j < RTE_ETH_RETA_GROUP_SIZE; j++) {
             reta_conf[i].reta[j] = hash++ % nb_queues;
         }
     }
@@ -627,8 +627,8 @@ init_port_start(void)
                 addr.addr_bytes, RTE_ETHER_ADDR_LEN);
 
             /* Set RSS mode */
-            uint64_t default_rss_hf = ETH_RSS_PROTO_MASK;
-            port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
+            uint64_t default_rss_hf = RTE_ETH_RSS_PROTO_MASK;
+            port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
             port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
             if (dev_info.hash_key_size == 52) {
                 rsskey = default_rsskey_52bytes;
@@ -642,57 +642,57 @@ init_port_start(void)
             port_conf.rx_adv_conf.rss_conf.rss_key_len = rsskey_len;
             port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
             if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
-                    ETH_RSS_PROTO_MASK) {
+                    RTE_ETH_RSS_PROTO_MASK) {
                 printf("Port %u modified RSS hash function based on hardware support,"
                         "requested:%#"PRIx64" configured:%#"PRIx64"\n",
                         port_id, default_rss_hf,
                         port_conf.rx_adv_conf.rss_conf.rss_hf);
             }
 
-            if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE) {
+            if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE) {
                 port_conf.txmode.offloads |=
-                    DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+                    RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
             }
 
             /* Set Rx VLAN stripping */
             if (ff_global_cfg.dpdk.vlan_strip) {
-                if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_VLAN_STRIP) {
-                    port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_STRIP;
+                if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_VLAN_STRIP) {
+                    port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
                 }
             }
 
             /* Enable HW CRC stripping */
-            port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_KEEP_CRC;
+            port_conf.rxmode.offloads &= ~RTE_ETH_RX_OFFLOAD_KEEP_CRC;
 
             /* FIXME: Enable TCP LRO ?*/
             #if 0
-            if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO) {
+            if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_LRO) {
                 printf("LRO is supported\n");
-                port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TCP_LRO;
+                port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_TCP_LRO;
                 pconf->hw_features.rx_lro = 1;
             }
             #endif
 
             /* Set Rx checksum checking */
-            if ((dev_info.rx_offload_capa & DEV_RX_OFFLOAD_IPV4_CKSUM) &&
-                (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_UDP_CKSUM) &&
-                (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM)) {
+            if ((dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) &&
+                (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_UDP_CKSUM) &&
+                (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_CKSUM)) {
                 printf("RX checksum offload supported\n");
-                port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CHECKSUM;
+                port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_CHECKSUM;
                 pconf->hw_features.rx_csum = 1;
             }
 
             if (ff_global_cfg.dpdk.tx_csum_offoad_skip == 0) {
-                if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)) {
+                if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)) {
                     printf("TX ip checksum offload supported\n");
-                    port_conf.txmode.offloads |= DEV_TX_OFFLOAD_IPV4_CKSUM;
+                    port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
                     pconf->hw_features.tx_csum_ip = 1;
                 }
 
-                if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) &&
-                    (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) {
+                if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) &&
+                    (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM)) {
                     printf("TX TCP&UDP checksum offload supported\n");
-                    port_conf.txmode.offloads |= DEV_TX_OFFLOAD_UDP_CKSUM | DEV_TX_OFFLOAD_TCP_CKSUM;
+                    port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_UDP_CKSUM | RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
                     pconf->hw_features.tx_csum_l4 = 1;
                 }
             } else {
@@ -700,9 +700,9 @@ init_port_start(void)
             }
 
             if (ff_global_cfg.dpdk.tso) {
-                if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) {
+                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO) {
                     printf("TSO is supported\n");
-                    port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_TSO;
+                    port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_TCP_TSO;
                     pconf->hw_features.tx_tso = 1;
                 }
                 else {

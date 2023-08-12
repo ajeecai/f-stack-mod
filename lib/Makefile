@@ -58,12 +58,14 @@ endif
 
 PKGCONF ?= pkg-config
 
-DPDK_CFLAGS= -Wall -Wno-deprecated-declarations -Werror $(shell $(PKGCONF) --cflags libdpdk)
+DPDK_CFLAGS= -Wall -Wno-deprecated-declarations -Werror $(shell $(PKGCONF) --cflags libdpdk) \
+ -I/root/github/f-stack/dpdk/lib/kni -I/root/github/f-stack/dpdk/lib/eal/include \
+ -I/root/github/f-stack/dpdk/drivers/bus/pci
 
 KERNPREINCLUDES:= ${INCLUDES}
 INCLUDES= -I${OVERRIDE_INCLUDES_ROOT} ${KERNPREINCLUDES}
 INCLUDES+= -I./machine_include
-INCLUDES+= -I./opt
+INCLUDES+= -I./opt -I../dpdk/lib/kni
 
 # Include search path for files that only include host OS headers
 HOST_INCLUDES= -I.
@@ -110,7 +112,7 @@ CFLAGS+= -DINET
 
 GCCVERGE10 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 10)
 ifeq "$(GCCVERGE10)" "1" 
-    CFLAGS+= -Wno-error=stringop-overflow
+    CFLAGS+= -Wno-error=stringop-overflow  -Wno-error=dangling-pointer
 endif 
 
 GCCVERGE11 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 11)

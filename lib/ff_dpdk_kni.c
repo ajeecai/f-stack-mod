@@ -30,6 +30,7 @@
 
 #include <rte_config.h>
 #include <rte_ether.h>
+#include <rte_bus.h>
 #include <rte_bus_pci.h>
 #include <rte_ethdev.h>
 #include <rte_kni.h>
@@ -38,6 +39,9 @@
 #include <rte_ip.h>
 #include <rte_tcp.h>
 #include <rte_udp.h>
+
+#include <bus_driver.h>
+#include <bus_pci_driver.h>
 
 #include "ff_dpdk_kni.h"
 #include "ff_config.h"
