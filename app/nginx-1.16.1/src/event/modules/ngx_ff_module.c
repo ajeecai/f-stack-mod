@@ -551,8 +551,9 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
  * int(struct timeval * restrict,  void * restrict)
  */
 int
-gettimeofday(struct timeval *tv, struct timezone *tz)
+gettimeofday(struct timeval *tv, void *tzz)
 {
+    struct timezone *tz = (struct timezone *) tzz;
     if (unlikely(inited == 0)) {
         return SYSCALL(gettimeofday)(tv, tz);
     }
