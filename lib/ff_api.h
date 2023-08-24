@@ -53,6 +53,10 @@ typedef int (*loop_func_t)(void *arg);
 
 int ff_init(int argc, char * const argv[]);
 
+#ifdef FF_FOR_SC
+int ff_init_for_sc(int argc, char *const argv[]);
+#endif
+
 void ff_run(loop_func_t loop, void *arg);
 
 /* POSIX-LIKE api begin */

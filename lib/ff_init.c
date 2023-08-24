@@ -55,6 +55,31 @@ ff_init(int argc, char * const argv[])
     return 0;
 }
 
+#ifdef FF_FOR_SC
+int ff_init_for_sc(int argc, char *const argv[])
+{
+    int ret;
+
+    ret = ff_load_config(argc, argv);
+    if (ret < 0)
+        exit(1);
+
+    ret = ff_dpdk_init_for_sc(dpdk_argc, (char **)&dpdk_argv);
+    if (ret < 0)
+        exit(1);
+
+    ret = ff_freebsd_init();
+    if (ret < 0)
+        exit(1);
+
+    ret = ff_dpdk_if_up();
+    if (ret < 0)
+        exit(1);
+
+    return 0;
+}
+#endif
+
 void
 ff_run(loop_func_t loop, void *arg)
 {

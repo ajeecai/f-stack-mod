@@ -1237,6 +1237,93 @@ ff_dpdk_init(int argc, char **argv)
     return 0;
 }
 
+#ifdef FF_FOR_SC
+int ff_dpdk_init_for_sc(int argc, char **argv)
+{
+    if (ff_global_cfg.dpdk.nb_procs < 1 ||
+        ff_global_cfg.dpdk.nb_procs > RTE_MAX_LCORE ||
+        ff_global_cfg.dpdk.proc_id >= ff_global_cfg.dpdk.nb_procs ||
+        ff_global_cfg.dpdk.proc_id < 0)
+    {
+    printf("param num_procs[%d] or proc_id[%d] error!\n",
+           ff_global_cfg.dpdk.nb_procs,
+           ff_global_cfg.dpdk.proc_id);
+    exit(1);
+    }
+
+    int ret = 0;
+    // int ret = rte_eal_init(argc, argv);
+    // if (ret < 0) {
+    //     rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
+    // }
+
+    numa_on = ff_global_cfg.dpdk.numa_on;
+
+    idle_sleep = ff_global_cfg.dpdk.idle_sleep;
+    pkt_tx_delay = ff_global_cfg.dpdk.pkt_tx_delay > BURST_TX_DRAIN_US ? BURST_TX_DRAIN_US : ff_global_cfg.dpdk.pkt_tx_delay;
+
+    init_lcore_conf();
+
+    init_mem_pool();
+
+    init_dispatch_ring();
+
+    init_msg_ring();
+
+#ifdef FF_KNI
+    enable_kni = ff_global_cfg.kni.enable;
+    if (enable_kni)
+    {
+    init_kni();
+    }
+#endif
+
+#ifdef FF_USE_PAGE_ARRAY
+    ff_mmap_init();
+#endif
+
+#ifdef FF_FLOW_ISOLATE
+    // run once in primary process
+    if (0 == lcore_conf.tx_queue_id[0])
+    {
+    ret = port_flow_isolate(0, 1);
+    if (ret < 0)
+            rte_exit(EXIT_FAILURE, "init_port_isolate failed\n");
+    }
+#endif
+
+    // ret = init_port_start();
+    if (ret < 0)
+    {
+    rte_exit(EXIT_FAILURE, "init_port_start failed\n");
+    }
+
+    init_clock();
+#ifdef FF_FLOW_ISOLATE
+    // Only give a example usage: port_id=0, tcp_port= 80.
+    // Recommend:
+    // 1. init_flow should replace `set_rss_table` in `init_port_start` loop, This can set all NIC's port_id_list instead only 0 device(port_id).
+    // 2. using config options `tcp_port` replace magic number of 80
+    ret = init_flow(0, 80);
+    if (ret < 0)
+    {
+    rte_exit(EXIT_FAILURE, "init_port_flow failed\n");
+    }
+#endif
+
+#ifdef FF_FDIR
+    /*
+     * Refer function header section for usage.
+     */
+    ret = fdir_add_tcp_flow(0, 0, FF_FLOW_INGRESS, 0, 80);
+    if (ret)
+    rte_exit(EXIT_FAILURE, "fdir_add_tcp_flow failed\n");
+#endif
+
+    return 0;
+}
+#endif
+
 static void
 ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
 {
