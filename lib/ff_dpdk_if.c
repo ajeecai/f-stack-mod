@@ -128,6 +128,10 @@ static uint16_t rss_reta_size[RTE_MAX_ETHPORTS];
 #define BOND_DRIVER_NAME    "net_bonding"
 
 static inline int send_single_packet(struct rte_mbuf *m, uint8_t port);
+#ifdef FF_FOR_SC
+static void ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt);
+extern uint32_t ff_get_ip_from_ifp(void *p);
+#endif
 
 struct ff_msg_ring {
     char ring_name[FF_MSG_NUM][RTE_RING_NAMESIZE];
@@ -1322,7 +1326,26 @@ int ff_dpdk_init_for_sc(int argc, char **argv)
 
     return 0;
 }
-#endif
+
+void ff_input(void *p)
+{
+    struct rte_mbuf *pkt = (struct rte_mbuf *)p;
+    ff_veth_input(veth_ctx[pkt->port], pkt);
+}
+struct rte_mbuf *
+ff_clone_mbuf(struct rte_mbuf *m)
+{
+    struct rte_mempool *mbuf_pool = pktmbuf_pool[lcore_conf.socket_id];
+    return rte_pktmbuf_clone(m, mbuf_pool);
+}
+
+uint32_t
+ff_get_ip_from_port(int port)
+{
+    return ff_get_ip_from_ifp(veth_ctx[port]->ifp);
+}
+
+#endif // FF_FOR_SC
 
 static void
 ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)

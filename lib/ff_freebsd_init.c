@@ -57,6 +57,10 @@ int lo_set_defaultaddr(void);
 
 int ff_freebsd_init(void);
 
+#ifdef FF_FOR_SC
+uint32_t ff_get_ip_from_ifp(void* p);
+#endif
+
 extern void mutex_init(void);
 extern void mi_startup(void);
 extern void uma_startup(void *, int);
@@ -189,3 +193,48 @@ ff_freebsd_init(void)
 
     return (0);
 }
+
+#ifdef FF_FOR_SC
+// ajee: should consider IPv6
+uint32_t ff_get_ip_from_ifp(void* p)
+{
+    struct ifnet *ifp = (struct ifnet *)p;
+    struct ifaddr *ifa;        // A pointer to a struct ifaddr
+    struct sockaddr_in *sin;   // A pointer to a struct sockaddr_in
+    struct sockaddr_in6 *sin6; // A pointer to a struct sockaddr_in6
+    char ip[INET6_ADDRSTRLEN]; // A buffer to store the IP address as a string
+
+    // Iterate over the list of addresses associated with the interface
+    CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link)
+    {
+        if (!(ifa && ifa->ifa_addr))
+        {
+            continue;
+        }
+        // Check the address family
+        switch (ifa->ifa_addr->sa_family)
+        {
+        case AF_INET: // IPv4 address
+            // Cast the ifa_addr field to a struct sockaddr_in
+            sin = (struct sockaddr_in *)ifa->ifa_addr;
+            // Convert the IP address from network byte order to string
+            inet_ntop(AF_INET, &sin->sin_addr, ip, sizeof(ip));
+            // Print or use the IP address as needed
+            printf("IPv4 address: %s\n", ip);
+            return sin->sin_addr.s_addr;
+        case AF_INET6: // IPv6 address
+            // Cast the ifa_addr field to a struct sockaddr_in6
+            sin6 = (struct sockaddr_in6 *)ifa->ifa_addr;
+            // Convert the IP address from network byte order to string
+            inet_ntop(AF_INET6, &sin6->sin6_addr, ip, sizeof(ip));
+            // Print or use the IP address as needed
+            printf("IPv6 address: %s\n", ip);
+            break;
+        default: // Other address family
+            // Ignore or handle as needed
+            break;
+        }
+    }
+    return 0;
+}
+#endif

@@ -701,9 +701,11 @@ ether_input_internal(struct ifnet *ifp, struct mbuf *m)
 		 * re-entry (e.g. bridge, vlan, netgraph) but should not be
 		 * seen by upper protocol layers.
 		 */
+#ifndef FF_FOR_SC
 		if (!ETHER_IS_MULTICAST(eh->ether_dhost) &&
 		    bcmp(IF_LLADDR(ifp), eh->ether_dhost, ETHER_ADDR_LEN) != 0)
 			m->m_flags |= M_PROMISC;
+#endif
 	}
 
 	ether_demux(ifp, m);
