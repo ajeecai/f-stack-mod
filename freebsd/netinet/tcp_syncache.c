@@ -1727,6 +1727,10 @@ skip_alloc:
 	win = imin(win, TCP_MAXWIN);
 	sc->sc_wnd = win;
 
+#ifdef FF_FOR_SC
+	sc->flow = m->flow;
+#endif
+
 	if (V_tcp_do_rfc1323) {
 		/*
 		 * A timestamp received in a SYN makes
@@ -1899,6 +1903,9 @@ syncache_respond(struct syncache *sc, const struct mbuf *m0, int flags)
 	m->m_len = tlen;
 	m->m_pkthdr.len = tlen;
 	m->m_pkthdr.rcvif = NULL;
+#ifdef FF_FOR_SC
+	m->flow = sc->flow;
+#endif
 
 #ifdef INET6
 	if (sc->sc_inc.inc_flags & INC_ISIPV6) {

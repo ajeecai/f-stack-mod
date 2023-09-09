@@ -1,6 +1,10 @@
 ff_hardclock
 ff_freebsd_init
 ff_get_ip_from_ifp
+//#ifdef FF_FOR_SC
+pcurthread
+ff_sc_hook
+//#endif
 ff_socket
 ff_setsockopt
 ff_getsockopt

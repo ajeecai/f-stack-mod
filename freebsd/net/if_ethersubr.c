@@ -293,7 +293,12 @@ ether_output(struct ifnet *ifp, struct mbuf *m,
 	struct llentry *lle = NULL;
 	int addref = 0;
 
-	phdr = NULL;
+#ifdef FF_FOR_SC
+	char fake_haddr[] = {0x00, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x08, 0x00};
+	phdr = fake_haddr;
+	hlen = ETHER_HDR_LEN;
+#endif
+
 	pflags = 0;
 	if (ro != NULL) {
 		/* XXX BPF uses ro_prepend */
@@ -1152,7 +1157,9 @@ ether_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 #ifdef INET
 		case AF_INET:
 			ifp->if_init(ifp->if_softc);	/* before arpwhohas */
+#ifndef FF_FOR_SC
 			arp_ifinit(ifp, ifa);
+#endif
 			break;
 #endif
 		default:

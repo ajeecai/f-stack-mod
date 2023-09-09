@@ -41,6 +41,10 @@ int ff_next_mbuf(void **mbuf_bsd, void **data, unsigned *len);
 void* ff_mbuf_mtod(void* bsd_mbuf);
 void* ff_rte_frm_extcl(void* mbuf);
 
+#ifdef FF_FOR_SC
+int ff_sc_hook(void *m1, void *m2);
+#endif
+
 struct ff_tx_offload;
 void ff_mbuf_tx_offload(void *m, struct ff_tx_offload *offload);
 

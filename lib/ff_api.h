@@ -54,7 +54,8 @@ typedef int (*loop_func_t)(void *arg);
 int ff_init(int argc, char * const argv[]);
 
 // #ifdef FF_FOR_SC
-int ff_init_for_sc(int argc, char *const argv[]);
+typedef int (*SC_HOOK_FUNC)(void *flow, void *pkt);
+int ff_init_for_sc(int argc, char *const argv[],  int *flow_offset, SC_HOOK_FUNC sc_hook_func);
 void ff_input(void *pkt);
 struct rte_mbuf *ff_clone_mbuf(struct rte_mbuf *m);
 uint32_t ff_get_ip_from_port(int port);

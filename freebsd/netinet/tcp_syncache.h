@@ -77,6 +77,9 @@ struct syncache {
 	void		*sc_tfo_cookie;		/* for TCP Fast Open response */
 	void		*sc_pspare;		/* TCP_SIGNATURE */
 	u_int32_t	sc_spare[2];		/* UTO */
+#ifdef FF_FOR_SC
+	void *flow; // flow pointer
+#endif
 };
 
 /*

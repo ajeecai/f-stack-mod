@@ -65,6 +65,13 @@
 #include "ff_api.h"
 #include "ff_memory.h"
 
+#ifdef FF_FOR_SC
+#include <rte_mbuf.h>
+#include <rte_ether.h>
+#include <rte_ip.h>
+#include <rte_tcp.h>
+#endif
+
 #ifdef FF_KNI
 #define KNI_MBUF_MAX 2048
 #define KNI_QUEUE_SIZE 2048
@@ -1345,6 +1352,58 @@ ff_get_ip_from_port(int port)
     return ff_get_ip_from_ifp(veth_ctx[port]->ifp);
 }
 
+/* Check if a rte_mbuf is tcp data or not */
+int is_tcp_data(struct rte_mbuf *m)
+{
+    struct rte_ether_hdr *eth_hdr;
+    struct rte_ipv4_hdr *ipv4_hdr;
+    struct rte_ipv6_hdr *ipv6_hdr;
+    struct rte_tcp_hdr *tcp_hdr;
+
+    /* Get the ethernet header */
+    eth_hdr = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+
+    /* Check the packet type */
+    switch (m->packet_type)
+    {
+    case RTE_PTYPE_L3_IPV4:
+    /* Get the IPv4 header */
+    ipv4_hdr = (struct rte_ipv4_hdr *)(eth_hdr + 1);
+
+    /* Check the protocol field */
+    if (ipv4_hdr->next_proto_id == IPPROTO_TCP)
+    {
+            /* Get the TCP header */
+            tcp_hdr = (struct rte_tcp_hdr *)((char *)ipv4_hdr + sizeof(struct rte_ipv4_hdr));
+
+            /* Check if there is data after the TCP header */
+            if (m->pkt_len > sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) +
+                                 (tcp_hdr->data_off >> 4) * 4)
+                return 1; /* TCP data present */
+    }
+    break;
+    case RTE_PTYPE_L3_IPV6:
+    /* Get the IPv6 header */
+    ipv6_hdr = (struct rte_ipv6_hdr *)(eth_hdr + 1);
+
+    /* Check the protocol field */
+    if (ipv6_hdr->proto == IPPROTO_TCP)
+    {
+            /* Get the TCP header */
+            tcp_hdr = (struct rte_tcp_hdr *)((char *)ipv6_hdr + sizeof(struct rte_ipv6_hdr));
+
+            /* Check if there is data after the TCP header */
+            if (m->pkt_len > sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv6_hdr) +
+                                 (tcp_hdr->data_off >> 4) * 4)
+                return 1; /* TCP data present */
+    }
+    break;
+    default:
+    break;
+    }
+
+    return 0; /* Not TCP data */
+}
 #endif // FF_FOR_SC
 
 static void
@@ -1992,6 +2051,15 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
         total -= len;
         cur = NULL;
     }
+
+#ifdef FF_FOR_SC
+    if (ff_sc_hook(m, head) < 0)
+    {
+        rte_pktmbuf_free(head);
+        ff_mbuf_free(m);
+        return -1;
+    }
+#endif
 
     struct ff_tx_offload offload = {0};
     ff_mbuf_tx_offload(m, &offload);

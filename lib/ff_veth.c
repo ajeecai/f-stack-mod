@@ -61,6 +61,11 @@
 #include "ff_config.h"
 #include "ff_dpdk_if.h"
 
+#ifdef FF_FOR_SC
+extern int g_flow_offset;
+extern SC_HOOK_FUNC g_sc_hook_func;
+#endif
+
 struct ff_veth_softc {
     struct ifnet *ifp;
     uint8_t mac[ETHER_ADDR_LEN];
@@ -188,7 +193,20 @@ ff_veth_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 
     return (error);
 }
-
+#ifdef FF_FOR_SC
+int ff_sc_hook(void *m, void *head)
+{
+    struct mbuf *mb = (struct mbuf *)m;
+    // if (mb->flow)
+    if (is_tcp_data(head) && mb->flow)
+    {
+        // if this state is to drop, then drop
+        return g_sc_hook_func(mb->flow, head);
+        // if this state to mangle, then mangle and sent out
+    }
+    return 0;
+}
+#endif
 int
 ff_mbuf_copydata(void *m, void *data, int off, int len)
 {
@@ -319,7 +337,11 @@ ff_mbuf_gethdr(void *pkt, uint16_t total, void *data,
     m->m_len = len;
     m->m_next = NULL;
     m->m_nextpkt = NULL;
-
+#ifdef FF_FOR_SC
+#define RTE_MBUF_DYNFIELD(m, offset, type) ((type)((uintptr_t)(m) + (offset)))
+    void **flow_addr = RTE_MBUF_DYNFIELD(pkt, g_flow_offset, void **);
+    m->flow = *flow_addr;
+#endif
     if (rx_csum) {
         m->m_pkthdr.csum_flags = CSUM_IP_CHECKED | CSUM_IP_VALID |
             CSUM_DATA_VALID | CSUM_PSEUDO_HDR;
@@ -366,7 +388,7 @@ static int
 ff_veth_transmit(struct ifnet *ifp, struct mbuf *m)
 {
     struct ff_veth_softc *sc = (struct ff_veth_softc *)ifp->if_softc;
-    return ff_dpdk_if_send(sc->host_ctx, (void*)m, m->m_pkthdr.len);
+    return ff_dpdk_if_send(sc->host_ctx, (void *)m, m->m_pkthdr.len);
 }
 
 static void

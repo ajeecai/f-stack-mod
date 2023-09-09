@@ -200,6 +200,7 @@ struct m_ext {
 	void		*ext_arg2;	/* optional argument pointer */
 };
 
+This file is not used ....
 /*
  * The core of the mbuf object along with some shortcut defines for practical
  * purposes.

@@ -391,6 +391,9 @@ struct mbuf {
 		};
 		char	m_dat[0];			/* !M_PKTHDR, !M_EXT */
 	};
+#ifdef FF_FOR_SC
+	void *flow;
+#endif
 };
 
 #ifdef _KERNEL

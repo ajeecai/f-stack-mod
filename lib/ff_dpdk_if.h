@@ -37,11 +37,13 @@ struct loop_routine {
 };
 
 int ff_dpdk_init(int argc, char **argv);
-#ifdef FF_FOR_SC
-int ff_dpdk_init_for_sc(int argc, char **argv);
-#endif
 int ff_dpdk_if_up(void);
 void ff_dpdk_run(loop_func_t loop, void *arg);
+
+#ifdef FF_FOR_SC
+int ff_dpdk_init_for_sc(int argc, char **argv);
+int is_tcp_data(struct rte_mbuf *m);
+#endif
 
 struct ff_dpdk_if_context;
 struct ff_port_cfg;

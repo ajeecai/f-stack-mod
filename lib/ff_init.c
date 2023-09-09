@@ -30,6 +30,14 @@
 #include "ff_config.h"
 #include "ff_dpdk_if.h"
 
+#ifdef FF_FOR_SC
+#include <rte_mbuf.h>
+#include <rte_mbuf_dyn.h>
+
+int g_flow_offset = -1;
+SC_HOOK_FUNC g_sc_hook_func = NULL;
+#endif
+
 extern int ff_freebsd_init();
 
 int
@@ -56,7 +64,7 @@ ff_init(int argc, char * const argv[])
 }
 
 #ifdef FF_FOR_SC
-int ff_init_for_sc(int argc, char *const argv[])
+int ff_init_for_sc(int argc, char *const argv[], int *flow_offset, SC_HOOK_FUNC sc_hook_func)
 {
     int ret;
 
@@ -75,6 +83,17 @@ int ff_init_for_sc(int argc, char *const argv[])
     ret = ff_dpdk_if_up();
     if (ret < 0)
         exit(1);
+
+    g_sc_hook_func = sc_hook_func;
+
+    static const struct rte_mbuf_dynfield flow_pointer = {
+        .name = "suricata_flow_pointer",
+        .size = sizeof(void *),
+        .align = __alignof__(uint32_t),
+        .flags = 0,
+    };
+
+    g_flow_offset = *flow_offset = rte_mbuf_dynfield_register(&flow_pointer);
 
     return 0;
 }
