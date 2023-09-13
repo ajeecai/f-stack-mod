@@ -42,7 +42,7 @@ void ff_dpdk_run(loop_func_t loop, void *arg);
 
 #ifdef FF_FOR_SC
 int ff_dpdk_init_for_sc(int argc, char **argv);
-int is_tcp_data(struct rte_mbuf *m);
+int is_tcp_pkt(struct rte_mbuf *m);
 #endif
 
 struct ff_dpdk_if_context;

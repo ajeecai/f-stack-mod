@@ -70,6 +70,7 @@
 #include <rte_ether.h>
 #include <rte_ip.h>
 #include <rte_tcp.h>
+#include <ethernet.h>
 #endif
 
 #ifdef FF_KNI
@@ -1353,7 +1354,7 @@ ff_get_ip_from_port(int port)
 }
 
 /* Check if a rte_mbuf is tcp data or not */
-int is_tcp_data(struct rte_mbuf *m)
+int is_tcp_pkt(struct rte_mbuf *m)
 {
     struct rte_ether_hdr *eth_hdr;
     struct rte_ipv4_hdr *ipv4_hdr;
@@ -1364,9 +1365,9 @@ int is_tcp_data(struct rte_mbuf *m)
     eth_hdr = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
     /* Check the packet type */
-    switch (m->packet_type)
+    switch (ntohs(eth_hdr->ether_type))
     {
-    case RTE_PTYPE_L3_IPV4:
+    case ETHERTYPE_IP:
     /* Get the IPv4 header */
     ipv4_hdr = (struct rte_ipv4_hdr *)(eth_hdr + 1);
 
@@ -1377,12 +1378,14 @@ int is_tcp_data(struct rte_mbuf *m)
             tcp_hdr = (struct rte_tcp_hdr *)((char *)ipv4_hdr + sizeof(struct rte_ipv4_hdr));
 
             /* Check if there is data after the TCP header */
-            if (m->pkt_len > sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) +
-                                 (tcp_hdr->data_off >> 4) * 4)
-                return 1; /* TCP data present */
+            if (m->pkt_len >= sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) +
+                                  (tcp_hdr->data_off >> 4) * 4)
+            {
+                return 1;
+            }
     }
     break;
-    case RTE_PTYPE_L3_IPV6:
+    case ETHERTYPE_IPV6:
     /* Get the IPv6 header */
     ipv6_hdr = (struct rte_ipv6_hdr *)(eth_hdr + 1);
 
@@ -1393,9 +1396,11 @@ int is_tcp_data(struct rte_mbuf *m)
             tcp_hdr = (struct rte_tcp_hdr *)((char *)ipv6_hdr + sizeof(struct rte_ipv6_hdr));
 
             /* Check if there is data after the TCP header */
-            if (m->pkt_len > sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv6_hdr) +
-                                 (tcp_hdr->data_off >> 4) * 4)
-                return 1; /* TCP data present */
+            if (m->pkt_len >= sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv6_hdr) +
+                                  (tcp_hdr->data_off >> 4) * 4)
+            {
+                return 1;
+            }
     }
     break;
     default:
@@ -1983,8 +1988,10 @@ send_single_packet(struct rte_mbuf *m, uint8_t port)
     len++;
 
     /* enough pkts to be sent */
-    if (unlikely(len == MAX_PKT_BURST)) {
-        send_burst(qconf, MAX_PKT_BURST, port);
+    // ajee TODO: this is temp only
+    // if (unlikely(len == MAX_PKT_BURST)) {
+    {
+        send_burst(qconf, len, port);
         len = 0;
     }
 

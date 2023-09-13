@@ -28,7 +28,8 @@ endif
 
 HOST_OS:=$(shell uname -s)
 
-#DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
+# ajee TODO: build with optimization
+DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation -Wno-error=stringop-overread
 
 # No DPDK KNI support on FreeBSD
 ifneq ($(TGT_OS),FreeBSD)
@@ -60,6 +61,7 @@ PKGCONF ?= pkg-config
 
 DPDK_CFLAGS= -Wall -Wno-deprecated-declarations -Werror $(shell $(PKGCONF) --cflags libdpdk) \
  -I/root/github/f-stack/dpdk/lib/kni -I/root/github/f-stack/dpdk/lib/eal/include \
+ -I/root/github/f-stack/freebsd/net \
  -I/root/github/f-stack/dpdk/drivers/bus/pci
 
 KERNPREINCLUDES:= ${INCLUDES}

@@ -198,7 +198,7 @@ int ff_sc_hook(void *m, void *head)
 {
     struct mbuf *mb = (struct mbuf *)m;
     // if (mb->flow)
-    if (is_tcp_data(head) && mb->flow)
+    if (is_tcp_pkt(head) && mb->flow)
     {
         // if this state is to drop, then drop
         return g_sc_hook_func(mb->flow, head);
