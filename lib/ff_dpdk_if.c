@@ -139,6 +139,7 @@ static inline int send_single_packet(struct rte_mbuf *m, uint8_t port);
 #ifdef FF_FOR_SC
 static void ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt);
 extern uint32_t ff_get_ip_from_ifp(void *p);
+extern SC_HOOK_FUNC g_sc_hook_func;
 #endif
 
 struct ff_msg_ring {
@@ -2060,7 +2061,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     }
 
 #ifdef FF_FOR_SC
-    if (ff_sc_hook(m, head) < 0)
+    if (g_sc_hook_func && ff_sc_hook(m, head) < 0)
     {
         rte_pktmbuf_free(head);
         ff_mbuf_free(m);
